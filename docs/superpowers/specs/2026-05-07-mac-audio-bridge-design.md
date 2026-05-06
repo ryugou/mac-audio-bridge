@@ -153,30 +153,50 @@ macOS の入力デバイスを指定した出力デバイスに pass-thru する
 
 ```
 1. SMAppService が登録されていれば、ログイン時に macOS が自動起動
-2. アプリ起動 → Preferences 読込
-3. 残骸 AggregateDevice の掃除（UID プレフィックス
-   "com.ryugo.mac-audio-bridge.aggregate.*" を全削除）
-4. DeviceMonitor のリスナー登録
+2. 多重起動チェック:
+   - NSRunningApplication.runningApplications(withBundleIdentifier:)
+     で自分以外の同 Bundle ID プロセスが存在するか確認
+   - 存在すれば NSApp.terminate(nil) で即終了
+     （SMAppService 自動起動 + ユーザー手動起動の競合を防止）
+   - 既存プロセスを前面化する場合は既存プロセスに NSWorkspace 経由で
+     activate を指示（オプション、UX 向上）
+3. アプリ起動 → Preferences 読込
+4. 残骸 AggregateDevice の掃除:
+   - 全 AggregateDevice を列挙
+   - UID プレフィックス "com.ryugo.mac-audio-bridge.aggregate.*" にマッチする
+     ものを全削除
+   - ※ ステップ 2 で多重起動を防いでいるため、他の自プロセスの
+     アクティブ AggregateDevice を消す心配はない
+   - 他アプリは独自プレフィックスを使うため影響なし
+5. DeviceMonitor のリスナー登録
    - kAudioHardwarePropertyDefaultInputDevice
    - kAudioHardwarePropertyDefaultOutputDevice
    - kAudioHardwarePropertyDevices
-5. autoRun == true なら AudioBridgeEngine.start() を試行
+   - AVAudioEngine.configurationChangeNotification
+6. autoRun == true なら AudioBridgeEngine.start() を試行
    - DeviceSelection で選択デバイスを解決
    - 未接続なら一時的に systemDefault にフォールバック（メニュー警告）
    - feedback loop 検知なら .stopped(.feedbackLoop)
    - マイク権限未許可なら要求 → 拒否なら .stopped(.micPermissionDenied)
    - 正常なら AggregateDevice 構築 → AVAudioEngine 起動 → .running
-6. autoRun == false なら BridgeStatus = .idle のまま、ユーザーのトグル待機
+7. autoRun == false なら BridgeStatus = .idle のまま、ユーザーのトグル待機
 ```
+
+**Info.plist 補足**: 多重起動は macOS が同 Bundle ID で原則防ぐが、SMAppService 自動起動と手動起動のタイミング競合に備え、ステップ 2 のアプリ側チェックを正規の防御線とする。
 
 ### 5.2 終了時 (`applicationWillTerminate`)
 
 ```
 1. DeviceMonitor の全リスナー解除
 2. AVAudioEngine.stop()
-3. AggregateDeviceManager.destroy()  ← 重要: 残骸防止
-4. atexit(3) でも保険として 2 と 3 を呼ぶ
+3. AggregateDeviceManager.destroy()  ← 残骸防止
 ```
+
+**atexit(3) は使わない**:
+
+- atexit からの CoreAudio / AVFoundation API 呼び出しは依存ライブラリの破棄順序が未保証で、ハング・クラッシュを誘発しやすい
+- 異常終了（クラッシュ、`kill -9`）で残骸が出る場合は、§5.1 ステップ 4 の「起動時クリーンアップ」が確実に拾うので保険として十分
+- `applicationWillTerminate` を正規ルートとする
 
 ---
 
@@ -192,6 +212,26 @@ macOS の入力デバイスを指定した出力デバイスに pass-thru する
 | 4 | マイク権限拒否 | `.stopped(.micPermissionDenied)` + メニュー表示 + 設定ボタン |
 | 5 | サンプルレート不一致 | `mainMixerNode` 経由で AVAudioEngine が自動変換（実装上は何もしない） |
 
+### 6.1.1 切断時挙動の決定表
+
+起動時と動作中で挙動が異なるため、明示する。
+
+| 検知タイミング | DeviceChoice | 選択デバイスの状態 | 挙動 |
+|---------------|--------------|-------------------|------|
+| 起動時 | `.specific(uid)` | 未接続 | systemDefault にフォールバック、`.running`、メニュー警告 |
+| 起動時 | `.specific(uid)` | 接続中 | 通常起動、`.running` |
+| 起動時 | `.systemDefault` | システムデフォルトが nil | `.stopped(.engineFailed("no system default"))` |
+| 動作中 | `.specific(uid)` | 切断 | `engine.stop()` → `.stopped(.deviceDisconnected(uid:))` 維持 |
+| 動作中 | `.specific(uid)` | 切断 → 5 秒以内に再接続 | 自動で `.running` に復帰 |
+| 動作中 | `.specific(uid)` | 切断 → 5 秒超 | `.stopped(.deviceDisconnected(uid:))` のまま、ユーザー操作待ち |
+| 動作中 | `.systemDefault` | デフォルトが切替 | エンジン再構築（debounce 200〜500ms） |
+| フォールバック中 | `.specific(uid)` | 元の UID が再接続 | エンジン再構築 → 本来の選択で `.running` |
+
+ポリシーの基本方針:
+- **起動時の未接続**: フォールバックして「動いている」状態を優先
+- **動作中の切断**: 停止が安全（ユーザーが意図しない別デバイスへ流れるのを防ぐ）
+- **瞬断**: 5 秒以内なら同じデバイスとみなして自動復帰
+
 ### 6.2 設計上カバーする追加エッジケース
 
 | # | ケース | 挙動 |
@@ -202,8 +242,9 @@ macOS の入力デバイスを指定した出力デバイスに pass-thru する
 | 9 | SMAppService 登録失敗 | チェックボックスのトグル失敗時 alert + 状態ロールバック |
 | 10 | システムデフォルトデバイスが nil | `.stopped(.engineFailed("no system default"))` |
 | 11 | 同 UID デバイスの瞬断と再出現 | 5 秒以内の再出現なら自動再開、超えたら停止維持 |
-| 12 | `mediaServicesWereReset` 通知 | エンジンと AggregateDevice をフル再構築 |
+| 12 | エンジン構成変更通知 | `AVAudioEngine.configurationChangeNotification`（macOS）を購読し、エンジンと AggregateDevice をフル再構築。**※ iOS の `AVAudioSession.mediaServicesWereResetNotification` は macOS には存在しないため使わない** |
 | 13 | デバイス変更通知の連続発火 | DeviceMonitor で 200〜500ms debounce |
+| 14 | 多重起動 | アプリ起動時に同 Bundle ID のプロセス重複を検知 → 既存があれば即 `NSApp.terminate(nil)`。詳細は §5.1 |
 
 ### 6.3 ロギング
 
@@ -304,7 +345,40 @@ struct ResolvedDevice: Equatable {
 | `kAudioHardwarePropertyDefaultOutputDevice` 変更通知 | 同上（出力側） |
 | `kAudioHardwarePropertyDevices` 変更通知 | 接続デバイスリスト更新、選択中が切断 → 停止、再接続 → 再開 |
 | マイク権限拒否 | `.stopped(.micPermissionDenied)` |
-| `mediaServicesWereReset` | フル再構築 |
+| `AVAudioEngine.configurationChangeNotification` | フル再構築 |
+
+### 7.6 並行性モデル（スレッディング）
+
+CoreAudio コールバックは任意スレッドで呼ばれるため、`@Published` プロパティ更新やエンジン操作の race を防ぐために実行モデルを以下に固定する。
+
+#### スレッド / キュー分担
+
+| 種別 | 実行コンテキスト | 用途 |
+|------|----------------|------|
+| **MainActor** | DispatchQueue.main | `AppState` の `@Published` 更新、UI 反映、SwiftUI 経由の操作 |
+| **engineQueue** | 専用 serial DispatchQueue（`com.ryugo.mac-audio-bridge.engine`、QoS: `.userInitiated`） | `AudioBridgeEngine` の start / stop / 再構築、`AggregateDeviceManager` の create / destroy |
+| **CoreAudio コールバック** | CoreAudio HAL のスレッド（不定） | `DeviceMonitor` のリスナー本体。**ここでは即座に処理せず、engineQueue または MainActor にディスパッチするだけ** |
+
+#### ルール
+
+1. **CoreAudio コールバックは中継のみ**
+   - 受け取った変更通知は即座に `engineQueue.async { … }` か `Task { @MainActor in … }` に渡し、コールバック自身では何もしない
+   - debounce（200〜500ms）も engineQueue 上で実装
+
+2. **エンジン操作は engineQueue に逐次化**
+   - `start` / `stop` / `restart` / AggregateDevice 操作は engineQueue で実行
+   - 同時並行で複数の再構築が走らないことを保証
+
+3. **UI 更新は MainActor に集約**
+   - engineQueue 上で状態変化が起きたら `Task { @MainActor in appState.status = … }` でメインに戻す
+   - `AppState` のプロパティ更新は MainActor 内のみ
+
+4. **AVAudioEngine の API はスレッドセーフではない**
+   - `start()` / `stop()` / 接続変更は engineQueue 上で直列に実行
+   - inputNode/outputNode への AggregateDevice バインドも engineQueue 上で
+
+5. **再入防止**
+   - engineQueue が serial なので、再構築の途中で別の再構築要求が来ても順番待ちになる（lost wakeup なし）
 
 ---
 
@@ -322,8 +396,14 @@ struct ResolvedDevice: Equatable {
   kAudioAggregateDeviceIsPrivateKey: 1,                   // ← プライベート
   kAudioAggregateDeviceMainSubDeviceKey: <output UID>,    // ← 出力をマスタークロックに
   kAudioAggregateDeviceSubDeviceListKey: [
-    { kAudioSubDeviceUIDKey: <input UID> },
-    { kAudioSubDeviceUIDKey: <output UID> }
+    {
+      kAudioSubDeviceUIDKey: <input UID>,
+      kAudioSubDeviceDriftCompensationKey: 1   // ← 入力側はドリフト補正 ON
+    },
+    {
+      kAudioSubDeviceUIDKey: <output UID>
+      // マスターなのでドリフト補正不要（指定しても macOS が無視）
+    }
   ]
 }
 ```
@@ -331,6 +411,7 @@ struct ResolvedDevice: Equatable {
 **ポイント**:
 
 - `MainSubDevice` を出力デバイスにすることで、出力側のクロックがマスターになりドリフトを最小化
+- **マスターでない側（入力）に `kAudioSubDeviceDriftCompensationKey = 1` を設定**: 異なるクロックドメイン（USB マイク + Bluetooth ヘッドホン等）を束ねたとき、長時間運用での累積ドリフトをハードウェア側のリサンプラーが自動補正。クリックノイズや徐々なズレの予防
 - `IsPrivate = 1` でシステム設定や他アプリには出現しない
 - UID に UUID を含めることで、複数インスタンスや前回の残骸との衝突を防止
 
@@ -404,10 +485,16 @@ try engine.start()
 ```
 1. engine.stop()
 2. AggregateDeviceManager.destroy(currentID)
-3. start() を再実行
+3. 既存の AVAudioEngine インスタンスを破棄
+4. start() を再実行（新規 AVAudioEngine インスタンスを生成）
 ```
 
-数百 ms の音切れがこの 1〜3 の間に発生（仕様で許容済み）。
+**AVAudioEngine は再利用せず、毎回新規インスタンス化する**:
+- AVAudioEngine の内部状態（接続グラフ、フォーマット、AU バインド）はデバイス切替で再利用すると不安定なケースが知られている
+- 新規インスタンス化は数 ms 程度のオーバーヘッドだが、安定性のメリットが大きい
+- 数百 ms の音切れは AggregateDevice の再構築に起因（仕様で許容済み）
+
+すべて §7.6 の `engineQueue` 上で直列実行。
 
 ### 8.6 終了シーケンス
 
@@ -417,7 +504,22 @@ try engine.start()
 3. AggregateDeviceManager.destroy()
 ```
 
-破棄を確実に行わないとシステムに残骸が残る。`applicationWillTerminate` と `atexit(3)` の二重防御。
+破棄を確実に行わないとシステムに残骸が残る。`applicationWillTerminate` を正規ルートとし、異常終了時の残骸は §5.1 起動時クリーンアップでカバー（atexit は使わない、§5.2 参照）。
+
+### 8.7 pass-thru の不変条件
+
+「無加工で右から左に流す」を保証するための不変条件。実装時およびリファクタ時に絶対に守る。
+
+| # | 不変条件 | 実装上の対応 |
+|---|---------|-------------|
+| I1 | ゲイン 1.0 固定 | `mainMixerNode.outputVolume = 1.0` を起動時に明示セット、コード上で他の値を入れる箇所を作らない |
+| I2 | ノード接続は `inputNode → mainMixerNode` の 1 本のみ | `engine.connect()` を 1 回だけ呼ぶ。エフェクト系ノード（EQ, Compressor 等）を絶対に挿入しない |
+| I3 | `outputNode` への接続は AVAudioEngine が暗黙に行う | 明示的に `mainMixerNode → outputNode` を接続しない（重複接続を避ける） |
+| I4 | フォーマット指定は `nil` のみ | `engine.connect(..., format: nil)` で AVAudioEngine の自動マッチに任せる。任意の AVAudioFormat を指定しない |
+| I5 | tap を入れない | `installTap(onBus:bufferSize:format:block:)` を使わない（pass-thru 経路にバッファ取り出しは不要、レイテンシとリスクが増えるだけ） |
+| I6 | エンジン start 後にグラフを変更しない | デバイス変更時は §8.5 のフル再構築のみ。動作中の `disconnect` / `connect` は禁止 |
+
+これらは `AudioBridgeEngine` の実装と、将来のリファクタ・機能追加時のレビュー観点になる。
 
 ---
 
@@ -679,3 +781,19 @@ mac-audio-bridge/
 | マルチブリッジ | MVP では単一ペア、将来拡張として記録（§12） |
 | AggregateDevice 公開範囲 | A. プライベート（`IsPrivateKey = 1`） |
 | autoRun のセマンティクス | ログイン時自動起動 + アプリ起動時に Bridge を即 ON、を 1 つの設定で表現 |
+| 多重起動 | 禁止。アプリ起動時に同 Bundle ID プロセス重複を検知して即終了（§5.1） |
+
+### レビュー反映の記録（v1 → v2）
+
+初版の設計レビューで指摘された事項を以下のとおり反映:
+
+| 重要度 | 指摘 | 反映先 |
+|-------|------|--------|
+| 高 | AggregateDevice ドリフト補正キーの欠落 | §8.1 に `kAudioSubDeviceDriftCompensationKey = 1` 追加 |
+| 高 | `mediaServicesWereReset` は iOS API、macOS では使えない | §6.2 / §7.5 を `AVAudioEngine.configurationChangeNotification` に修正 |
+| 中 | リスナーコールバックのスレッド方針未定義 | §7.6「並行性モデル」を新設（MainActor / engineQueue / CoreAudio スレッドの分担） |
+| 中 | atexit での重い API 呼び出しは不安定 | §5.2 から atexit を削除、起動時クリーンアップに一本化 |
+| 中 | 切断挙動が起動時 / 動作中で不統一 | §6.1.1「切断時挙動の決定表」を新設 |
+| Open Q | デバイス切替時の AVAudioEngine 再利用前提 | §8.5 で「毎回新規インスタンス化」と明記 |
+| Open Q | pass-thru 厳密要件の明文化 | §8.7「pass-thru の不変条件」を新設（I1〜I6） |
+| Open Q | 多重起動時の他 Aggregate 削除リスク | §5.1 / §6.2 #14 で多重起動を禁止する設計に変更 |
