@@ -158,13 +158,42 @@ final class AppState: ObservableObject {
             Task { @MainActor in
                 self.refreshDeviceLists()
             }
-            // 切断検知 → 動作中なら停止判定（main へ）
-            scheduleRebuildOnEngineQueue()
-        case .defaultInputChanged, .defaultOutputChanged:
+            // 自分の AggregateDevice の create/destroy でも発火するため、
+            // 無条件に再構築すると自己ループになる。
+            // 選択中のデバイスが消えていた場合のみ stop する。
+            checkSelectedDeviceStillConnected()
+        case .defaultInputChanged:
             Task { @MainActor in
                 self.refreshDeviceLists()
             }
-            scheduleRebuildOnEngineQueue()
+            // .systemDefault 追従中で動作中の時のみ再構築
+            if preferences.inputChoice == .systemDefault, engineRunningOnEngineQ {
+                scheduleRebuildOnEngineQueue()
+            }
+        case .defaultOutputChanged:
+            Task { @MainActor in
+                self.refreshDeviceLists()
+            }
+            if preferences.outputChoice == .systemDefault, engineRunningOnEngineQ {
+                scheduleRebuildOnEngineQueue()
+            }
+        }
+    }
+
+    private func checkSelectedDeviceStillConnected() {
+        // engineQueue 上で実行
+        guard engineRunningOnEngineQ else { return }
+        let inputResolved = resolve(choice: preferences.inputChoice, defaultDevice: provider.defaultInputDevice, list: provider.connectedInputDevices)
+        let outputResolved = resolve(choice: preferences.outputChoice, defaultDevice: provider.defaultOutputDevice, list: provider.connectedOutputDevices)
+        if inputResolved == nil || outputResolved == nil {
+            let lostUID = inputResolved == nil
+                ? (preferences.inputChoice.storageString)
+                : (preferences.outputChoice.storageString)
+            engine.stop()
+            engineRunningOnEngineQ = false
+            Task { @MainActor in
+                self.status = .stopped(.deviceDisconnected(uid: lostUID))
+            }
         }
     }
 

@@ -35,13 +35,14 @@ final class AggregateDeviceManager {
             kAudioAggregateDeviceSubDeviceListKey as String: [inputDict, outputDict]
         ]
 
+        Log.aggregate.info("creating aggregate input=\(inputUID, privacy: .public) output=\(outputUID, privacy: .public)")
         var deviceID = AudioDeviceID(0)
         let status = AudioHardwareCreateAggregateDevice(dict as CFDictionary, &deviceID)
         guard status == noErr else {
-            Log.aggregate.error("create failed: \(status)")
+            Log.aggregate.error("create failed status=\(status, privacy: .public)")
             throw AggregateDeviceError.createFailed(status)
         }
-        Log.aggregate.info("created \(aggregateUID) id=\(deviceID)")
+        Log.aggregate.info("created \(aggregateUID, privacy: .public) id=\(deviceID, privacy: .public)")
         return deviceID
     }
 
