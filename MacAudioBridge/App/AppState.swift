@@ -45,6 +45,11 @@ final class AppState: ObservableObject {
     // engineQueue 内で完結する別フラグを持つ。
     private nonisolated(unsafe) var engineRunningOnEngineQ: Bool = false
 
+    // 起動要求を世代管理して、保留中の permission completion や engineQueue 上の
+    // startSync を toggleOff によって invalidate できるようにする。
+    // toggleOn / toggleOff のたびに inc し、completion / startSync で照合する。
+    private nonisolated(unsafe) var startGeneration: UInt64 = 0
+
     // MARK: - Init
 
     init(
@@ -97,16 +102,14 @@ final class AppState: ObservableObject {
     func toggleOn() {
         guard status != .running, status != .starting else { return }
         status = .starting
-        requestPermissionAndStart()
-    }
-
-    private func requestPermissionAndStart() {
+        startGeneration &+= 1
+        let gen = startGeneration
         PermissionHelper.requestMicrophoneAccess { [weak self] auth in
-            guard let self else { return }
+            guard let self, self.startGeneration == gen else { return }
             switch auth {
             case .authorized:
                 self.engineQueue.async {
-                    self.startSync()
+                    self.startSync(generation: gen)
                 }
             case .denied, .notDetermined:
                 self.status = .stopped(.micPermissionDenied)
@@ -115,6 +118,7 @@ final class AppState: ObservableObject {
     }
 
     func toggleOff() {
+        startGeneration &+= 1
         engineQueue.async { [weak self] in
             guard let self else { return }
             self.engine.stop()
@@ -196,8 +200,10 @@ final class AppState: ObservableObject {
         engineQueue.asyncAfter(deadline: .now() + 0.3, execute: work)
     }
 
-    nonisolated private func startSync() {
+    nonisolated private func startSync(generation: UInt64) {
         // permission チェックは toggleOn 経由で MainActor で済んでいる前提。
+        // generation がズレていれば toggleOff 等で起動要求が無効化されたので何もしない。
+        guard generation == startGeneration else { return }
         let (input, output) = resolveCurrentSelection()
         guard let inputUID = input?.uid, let outputUID = output?.uid else {
             failStart(.engineFailed(message: "no system default"))
@@ -228,7 +234,9 @@ final class AppState: ObservableObject {
         guard engineRunningOnEngineQ else { return }
         engine.stop()
         engineRunningOnEngineQ = false
-        startSync()
+        // 同じ generation のまま startSync を呼ぶ。startSync 中に toggleOff で
+        // generation が進めば、startSync 冒頭の guard で abort する。
+        startSync(generation: startGeneration)
     }
 
     nonisolated private func resolve(choice: DeviceChoice, defaultDevice: Device?, list: [Device]) -> ResolvedDevice? {
@@ -254,18 +262,23 @@ final class AppState: ObservableObject {
     }
 
     private func applyAutoRunChange() {
-        preferences.autoRun = autoRun
+        // preferences の更新は SMAppService 操作の成功後に行う。
+        // 失敗時のロールバックで preferences の前回値が必要になるため、先に preferences を
+        // 書き換えてしまうと「変更前の値」が失われ、autoRun = preferences.autoRun が新値のまま
+        // になってロールバック不能になる。
+        let previous = preferences.autoRun
+        let target = autoRun
         do {
-            if autoRun {
+            if target {
                 try LoginItemController.register()
             } else {
                 try LoginItemController.unregister()
             }
+            preferences.autoRun = target
         } catch {
             Log.app.error("autoRun change failed: \(error.localizedDescription)")
-            // ロールバック (didSet の再発火を抑止する)
             isRollingBackAutoRun = true
-            autoRun = preferences.autoRun
+            autoRun = previous
             isRollingBackAutoRun = false
         }
     }

@@ -15,10 +15,25 @@ final class AudioBridgeEngine {
     /// 起動。事前に inputUID と outputUID は呼び出し側で解決済みであること。
     /// 同一 UID（feedback loop）の場合は呼び出し側で弾くこと。
     /// AVAudioEngine は毎回新規インスタンスを作る（再利用しない、§8.5）。
+    /// 途中で throw した場合、作成済みの AggregateDevice を defer で確実に破棄する
+    /// (例外安全)。
     func start(inputUID: String, outputUID: String) throws {
         try stopInternal(destroyAggregate: true)
 
         let aggID = try aggregateManager.create(inputUID: inputUID, outputUID: outputUID)
+        var startCompleted = false
+        defer {
+            if !startCompleted {
+                try? aggregateManager.destroy(aggID)
+                self.aggregateDeviceID = nil
+                self.engine = nil
+                self.player = nil
+                if let observer = self.configChangeObserver {
+                    NotificationCenter.default.removeObserver(observer)
+                    self.configChangeObserver = nil
+                }
+            }
+        }
         self.aggregateDeviceID = aggID
 
         let engine = AVAudioEngine()
@@ -44,6 +59,7 @@ final class AudioBridgeEngine {
         player.play()
         self.engine = engine
         self.player = player
+        startCompleted = true
 
         // configurationChangeNotification は AVAudioEngine 起動直後にも通常発火するため、
         // 自動再構築のトリガーにすると無限ループになる。ログのみ出して無視する。
