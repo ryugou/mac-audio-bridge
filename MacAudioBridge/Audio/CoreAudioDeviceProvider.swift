@@ -23,13 +23,20 @@ final class CoreAudioDeviceProvider: DeviceProvider {
     /// 1 回の `allDevices()` で入出力リストを取得し、加えてデフォルトデバイス 2 件を
     /// 解決する。`connectedInputDevices` / `connectedOutputDevices` を別個に呼ぶと
     /// HAL 列挙が二重に走るため、両方欲しい呼び出し側はこちらを使う。
+    /// 一貫性のため、デフォルトデバイス ID は `all` の中から探し、見つからなければ
+    /// `makeDevice(id:)` でフォールバックする (タイミングによる「リストには無いけど
+    /// デフォルト」の不整合を吸収)。
     func snapshot() -> DeviceSnapshot {
         let all = allDevices()
+        let defaultIn = defaultDeviceID(selector: kAudioHardwarePropertyDefaultInputDevice)
+            .flatMap { id in all.first(where: { $0.id == id }) ?? makeDevice(id: id) }
+        let defaultOut = defaultDeviceID(selector: kAudioHardwarePropertyDefaultOutputDevice)
+            .flatMap { id in all.first(where: { $0.id == id }) ?? makeDevice(id: id) }
         return DeviceSnapshot(
             connectedInputDevices: all.filter { $0.hasInput },
             connectedOutputDevices: all.filter { $0.hasOutput },
-            defaultInputDevice: defaultInputDevice,
-            defaultOutputDevice: defaultOutputDevice
+            defaultInputDevice: defaultIn,
+            defaultOutputDevice: defaultOut
         )
     }
 

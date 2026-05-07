@@ -125,6 +125,8 @@ final class AppState: ObservableObject {
         status = .starting
         let gen = bumpStartGeneration()
         PermissionHelper.requestMicrophoneAccess { [weak self] auth in
+            // PermissionHelper.requestMicrophoneAccess は .authorized / .denied のみ返す
+            // 仕様 (.notDetermined は内部で requestAccess を発行して結果に解決される)。
             guard let self, self.currentStartGeneration() == gen else { return }
             switch auth {
             case .authorized:
@@ -132,6 +134,7 @@ final class AppState: ObservableObject {
                     self.startSync(generation: gen)
                 }
             case .denied, .notDetermined:
+                // .notDetermined は到達しないが defensive に denied 同様に扱う。
                 self.status = .stopped(.micPermissionDenied)
             }
         }
@@ -162,7 +165,11 @@ final class AppState: ObservableObject {
     // MARK: - Private (engineQueue)
 
     nonisolated private func handleMonitorEvent(_ event: DeviceMonitor.Event) {
-        Task { @MainActor in self.refreshDeviceLists() }
+        // snapshot は engineQueue 上 (handleMonitorEvent の呼び出し元) で取得し、
+        // @Published の差分反映だけを MainActor に逃がす。MainActor 上で
+        // HAL 列挙を同期実行しないことでメニューバー UI の詰まりを防ぐ。
+        let snap = provider.snapshot()
+        Task { @MainActor in self.applySnapshot(snap) }
         switch event {
         case .deviceListChanged:
             // 自分の AggregateDevice の create/destroy でも発火するため、
@@ -285,9 +292,14 @@ final class AppState: ObservableObject {
     }
 
     private func refreshDeviceLists() {
-        // 1 回の snapshot で 4 プロパティを更新する。HAL 列挙が 1 回で済む。
+        // init 経由で MainActor 上で 1 度だけ呼ばれる。HAL 列挙は走るがブロッキング
+        // 影響は限定的。デバイスイベント由来の更新は handleMonitorEvent から
+        // engineQueue で snapshot を取り applySnapshot に流す。
+        applySnapshot(provider.snapshot())
+    }
+
+    private func applySnapshot(_ snap: DeviceSnapshot) {
         // 変化があったプロパティだけ書き換えて、SwiftUI の不要な再描画を抑える。
-        let snap = provider.snapshot()
         if snap.connectedInputDevices != connectedInputDevices { connectedInputDevices = snap.connectedInputDevices }
         if snap.connectedOutputDevices != connectedOutputDevices { connectedOutputDevices = snap.connectedOutputDevices }
         if snap.defaultInputDevice != defaultInputDevice { defaultInputDevice = snap.defaultInputDevice }
