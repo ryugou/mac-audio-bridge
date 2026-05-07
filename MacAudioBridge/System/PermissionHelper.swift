@@ -18,21 +18,23 @@ enum PermissionHelper {
     }
 
     /// マイク権限をユーザーに要求し、結果を completion で返す。
-    /// 既に決定済みの場合は即座に現状を返す。
+    /// completion は **常に main queue 上** で呼ばれる（呼び出し側の UI 更新を簡略化するため）。
+    /// 既に決定済みのケースも非同期に main へ戻し、呼び出しスレッド差を消す。
     static func requestMicrophoneAccess(completion: @escaping (MicrophoneAuthorization) -> Void) {
+        let deliver: (MicrophoneAuthorization) -> Void = { auth in
+            DispatchQueue.main.async { completion(auth) }
+        }
         switch AVCaptureDevice.authorizationStatus(for: .audio) {
         case .authorized:
-            completion(.authorized)
+            deliver(.authorized)
         case .denied, .restricted:
-            completion(.denied)
+            deliver(.denied)
         case .notDetermined:
             AVCaptureDevice.requestAccess(for: .audio) { granted in
-                DispatchQueue.main.async {
-                    completion(granted ? .authorized : .denied)
-                }
+                deliver(granted ? .authorized : .denied)
             }
         @unknown default:
-            completion(.denied)
+            deliver(.denied)
         }
     }
 

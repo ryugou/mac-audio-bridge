@@ -38,6 +38,10 @@ final class AppState: ObservableObject {
         label: "com.ryugo.mac-audio-bridge.engine",
         qos: .userInitiated
     )
+    /// SMAppService の register/unregister を直列化する専用キュー。
+    /// バックグラウンドで実行しつつ、トグル連打時に複数の操作が並行起動して
+    /// 完了順序が入れ替わるのを防ぐ。
+    private let autoRunQueue = DispatchQueue(label: "com.ryugo.mac-audio-bridge.autoRun")
     private var monitor: DeviceMonitor?
     private nonisolated(unsafe) var debounceWorkItem: DispatchWorkItem?
 
@@ -292,13 +296,13 @@ final class AppState: ObservableObject {
 
     private func applyAutoRunChange() {
         // SMAppService の register / unregister は ServiceManagement 経由で
-        // 失敗時に数秒オーダーで遅延しうる。MainActor で同期実行すると
-        // メニューバー UI がブロックされるため、操作はバックグラウンドキューに送り、
-        // 結果反映だけ MainActor に戻す。
+        // 失敗時に数秒オーダーで遅延しうる。MainActor で同期実行するとメニューバー
+        // UI がブロックされるため、autoRunQueue (serial) に送り、結果だけ MainActor
+        // に戻す。serial 化することでトグル連打時の完了順入れ替わりも防ぐ。
         // preferences の更新は成功後に行う（rollback で previous が読み出せるように）。
         let previous = preferences.autoRun
         let target = autoRun
-        DispatchQueue.global(qos: .userInitiated).async { [weak self] in
+        autoRunQueue.async { [weak self] in
             let result: Result<Void, Error>
             do {
                 if target {

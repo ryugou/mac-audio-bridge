@@ -21,7 +21,11 @@ final class AudioBridgeEngine {
     /// tap callback で +1、scheduleBuffer の completionHandler で -1。
     /// real-time thread からも触られるため atomic 更新。
     private let pendingBuffers = OSAllocatedUnfairLock<Int>(initialState: 0)
-    /// 直近の警告ログ時刻。1 秒に 1 回までに間引く。
+    /// backpressure 警告ログを出す専用 serial キュー。
+    /// `Date()` / `OSLog` / `lastBackpressureWarn` 更新を tap の real-time thread から
+    /// 排除して、グリッチ要因を減らす。
+    private let backpressureLogQueue = DispatchQueue(label: "com.ryugo.mac-audio-bridge.backpressure-log", qos: .utility)
+    /// 直近の警告ログ時刻（backpressureLogQueue 上のみで読み書き）。
     private var lastBackpressureWarn = Date.distantPast
 
     /// 起動。事前に inputUID と outputUID は呼び出し側で解決済みであること。
@@ -107,10 +111,15 @@ final class AudioBridgeEngine {
                 return state
             }
             if depth > Self.pendingBufferWarnThreshold {
-                let now = Date()
-                if now.timeIntervalSince(self.lastBackpressureWarn) > 1.0 {
-                    self.lastBackpressureWarn = now
-                    Log.engine.error("tap backpressure: pending buffers=\(depth, privacy: .public) (threshold=\(Self.pendingBufferWarnThreshold, privacy: .public))")
+                // RT スレッド上では Date() / OSLog / 状態更新を行わず、
+                // 専用の serial queue にディスパッチして間引きと記録を任せる。
+                self.backpressureLogQueue.async { [weak self] in
+                    guard let self else { return }
+                    let now = Date()
+                    if now.timeIntervalSince(self.lastBackpressureWarn) > 1.0 {
+                        self.lastBackpressureWarn = now
+                        Log.engine.error("tap backpressure: pending buffers=\(depth, privacy: .public) (threshold=\(Self.pendingBufferWarnThreshold, privacy: .public))")
+                    }
                 }
             }
             player.scheduleBuffer(copy) { [weak self] in
