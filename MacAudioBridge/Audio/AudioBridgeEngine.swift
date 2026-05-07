@@ -67,19 +67,29 @@ final class AudioBridgeEngine {
         try engine.inputNode.auAudioUnit.setDeviceID(aggID)
         try engine.outputNode.auAudioUnit.setDeviceID(aggID)
 
-        let outputFormat = engine.outputNode.outputFormat(forBus: 0)
-
         // setDeviceID 直後は HAL がデバイスとの format ネゴシエーション中で
         // sampleRate/channelCount = 0 の無効 format を返すケースがある。
         // 無効 format を `AVAudioEngine.connect(_:to:format:)` に渡すと
         // ObjC 例外が投げられ Swift では catch できず即 abort する (SIGABRT)。
-        // 事前に validate して throw に倒し、上位に通常エラーとして返す。
+        // 最大 500ms (50ms × 10 回) 待って format が確定するまで retry し、
+        // それでも 0/0 のままなら通常エラーとして throw する。
+        // engineQueue は serial なので Thread.sleep してよい。
+        var outputFormat = engine.outputNode.outputFormat(forBus: 0)
+        var retries = 0
+        while (outputFormat.sampleRate <= 0 || outputFormat.channelCount == 0) && retries < 10 {
+            Thread.sleep(forTimeInterval: 0.05)
+            outputFormat = engine.outputNode.outputFormat(forBus: 0)
+            retries += 1
+        }
         guard outputFormat.sampleRate > 0, outputFormat.channelCount > 0 else {
-            Log.engine.error("outputNode format invalid: sr=\(outputFormat.sampleRate, privacy: .public) ch=\(outputFormat.channelCount, privacy: .public)")
+            Log.engine.error("outputNode format still invalid after retries: sr=\(outputFormat.sampleRate, privacy: .public) ch=\(outputFormat.channelCount, privacy: .public)")
             throw AudioBridgeEngineError.invalidNodeFormat(
                 sampleRate: outputFormat.sampleRate,
                 channelCount: outputFormat.channelCount
             )
+        }
+        if retries > 0 {
+            Log.engine.info("outputNode format settled after \(retries, privacy: .public) retries: sr=\(outputFormat.sampleRate, privacy: .public) ch=\(outputFormat.channelCount, privacy: .public)")
         }
 
         // pass-thru 実装：tap + AVAudioPlayerNode 中継方式
