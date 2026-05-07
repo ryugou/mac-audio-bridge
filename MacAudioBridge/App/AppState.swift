@@ -181,12 +181,12 @@ final class AppState: ObservableObject {
         guard engineRunningOnEngineQ else { return }
         let (input, output) = resolveCurrentSelection()
         if input == nil || output == nil {
-            let lostUID = input == nil
-                ? preferences.inputChoice.storageString
-                : preferences.outputChoice.storageString
             engine.stop()
             engineRunningOnEngineQ = false
-            setStatus(.stopped(.deviceDisconnected(uid: lostUID)))
+            // startSync と同じ unresolvedReason ロジックを使い、起動時と動作中で
+            // 診断粒度を揃える。.systemDefault 由来は "system_default" を UI に
+            // 露出させず engineFailed("no system default") に落とす。
+            setStatus(.stopped(unresolvedReason(input: input, output: output)))
         }
     }
 
