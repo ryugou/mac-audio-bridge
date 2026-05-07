@@ -76,6 +76,12 @@ final class AudioBridgeEngine {
             copy.frameLength = buffer.frameLength
             let bytesPerFrame = Int(buffer.format.streamDescription.pointee.mBytesPerFrame)
             let byteCount = Int(buffer.frameLength) * bytesPerFrame
+            // installTap の format は engine.outputNode.outputFormat (non-interleaved float)
+            // なので通常 floatChannelData パスを通る。defensive に他の non-interleaved
+            // PCM (int16 / int32) もハンドルし、いずれにも該当しない (interleaved 等) の
+            // 場合は未初期化バッファを再生しないよう return で skip する。
+            // pendingBuffers の increment は schedule 直前に行うため、ここで早期 return しても
+            // カウンタはずれない。
             if let src = buffer.floatChannelData, let dst = copy.floatChannelData {
                 for ch in 0..<Int(buffer.format.channelCount) {
                     memcpy(dst[ch], src[ch], byteCount)
@@ -88,6 +94,9 @@ final class AudioBridgeEngine {
                 for ch in 0..<Int(buffer.format.channelCount) {
                     memcpy(dst[ch], src[ch], byteCount)
                 }
+            } else {
+                Log.engine.error("unsupported tap buffer format (interleaved?): skipping frame")
+                return
             }
 
             // backpressure 観測: schedule 前後で pending count を増減し、
