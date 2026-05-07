@@ -20,6 +20,19 @@ final class CoreAudioDeviceProvider: DeviceProvider {
         return makeDevice(id: id)
     }
 
+    /// 1 回の `allDevices()` で入出力リストを取得し、加えてデフォルトデバイス 2 件を
+    /// 解決する。`connectedInputDevices` / `connectedOutputDevices` を別個に呼ぶと
+    /// HAL 列挙が二重に走るため、両方欲しい呼び出し側はこちらを使う。
+    func snapshot() -> DeviceSnapshot {
+        let all = allDevices()
+        return DeviceSnapshot(
+            connectedInputDevices: all.filter { $0.hasInput },
+            connectedOutputDevices: all.filter { $0.hasOutput },
+            defaultInputDevice: defaultInputDevice,
+            defaultOutputDevice: defaultOutputDevice
+        )
+    }
+
     // MARK: - Internal
 
     /// 接続中の全デバイスを 1 度の HAL enumeration で返す。

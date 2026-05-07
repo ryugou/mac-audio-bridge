@@ -199,9 +199,11 @@ final class AppState: ObservableObject {
     }
 
     nonisolated private func resolveCurrentSelection() -> (input: ResolvedDevice?, output: ResolvedDevice?) {
-        (
-            resolve(choice: preferences.inputChoice, defaultDevice: provider.defaultInputDevice, list: provider.connectedInputDevices),
-            resolve(choice: preferences.outputChoice, defaultDevice: provider.defaultOutputDevice, list: provider.connectedOutputDevices)
+        // 1 回の snapshot で入出力を解決し、HAL の二重列挙を避ける。
+        let snap = provider.snapshot()
+        return (
+            resolve(choice: preferences.inputChoice, defaultDevice: snap.defaultInputDevice, list: snap.connectedInputDevices),
+            resolve(choice: preferences.outputChoice, defaultDevice: snap.defaultOutputDevice, list: snap.connectedOutputDevices)
         )
     }
 
@@ -283,15 +285,13 @@ final class AppState: ObservableObject {
     }
 
     private func refreshDeviceLists() {
+        // 1 回の snapshot で 4 プロパティを更新する。HAL 列挙が 1 回で済む。
         // 変化があったプロパティだけ書き換えて、SwiftUI の不要な再描画を抑える。
-        let newInputs = provider.connectedInputDevices
-        if newInputs != connectedInputDevices { connectedInputDevices = newInputs }
-        let newOutputs = provider.connectedOutputDevices
-        if newOutputs != connectedOutputDevices { connectedOutputDevices = newOutputs }
-        let newDefaultIn = provider.defaultInputDevice
-        if newDefaultIn != defaultInputDevice { defaultInputDevice = newDefaultIn }
-        let newDefaultOut = provider.defaultOutputDevice
-        if newDefaultOut != defaultOutputDevice { defaultOutputDevice = newDefaultOut }
+        let snap = provider.snapshot()
+        if snap.connectedInputDevices != connectedInputDevices { connectedInputDevices = snap.connectedInputDevices }
+        if snap.connectedOutputDevices != connectedOutputDevices { connectedOutputDevices = snap.connectedOutputDevices }
+        if snap.defaultInputDevice != defaultInputDevice { defaultInputDevice = snap.defaultInputDevice }
+        if snap.defaultOutputDevice != defaultOutputDevice { defaultOutputDevice = snap.defaultOutputDevice }
     }
 
     private func applyAutoRunChange() {

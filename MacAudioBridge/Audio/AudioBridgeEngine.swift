@@ -99,7 +99,10 @@ final class AudioBridgeEngine {
                     memcpy(dst[ch], src[ch], byteCount)
                 }
             } else {
-                Log.engine.error("unsupported tap buffer format (interleaved?): skipping frame")
+                // RT スレッド上では Log を直接呼ばず、別キューに逃がす。
+                self.backpressureLogQueue.async {
+                    Log.engine.error("unsupported tap buffer format (interleaved?): skipping frame")
+                }
                 return
             }
 
