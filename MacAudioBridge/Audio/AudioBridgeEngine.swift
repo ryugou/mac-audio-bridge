@@ -34,7 +34,7 @@ final class AudioBridgeEngine {
     /// 途中で throw した場合、作成済みの AggregateDevice を defer で確実に破棄する
     /// (例外安全)。
     func start(inputUID: String, outputUID: String) throws {
-        try stopInternal(destroyAggregate: true)
+        stopInternal(destroyAggregate: true)
 
         let aggID = try aggregateManager.create(inputUID: inputUID, outputUID: outputUID)
         var startCompleted = false
@@ -155,10 +155,10 @@ final class AudioBridgeEngine {
 
     /// 停止。AggregateDevice も破棄する。
     func stop() {
-        try? stopInternal(destroyAggregate: true)
+        stopInternal(destroyAggregate: true)
     }
 
-    private func stopInternal(destroyAggregate: Bool) throws {
+    private func stopInternal(destroyAggregate: Bool) {
         if let observer = configChangeObserver {
             NotificationCenter.default.removeObserver(observer)
             configChangeObserver = nil

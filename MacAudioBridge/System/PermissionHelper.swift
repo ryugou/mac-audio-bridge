@@ -18,11 +18,11 @@ enum PermissionHelper {
     }
 
     /// マイク権限をユーザーに要求し、結果を completion で返す。
-    /// completion は **常に main queue 上** で呼ばれる（呼び出し側の UI 更新を簡略化するため）。
-    /// 既に決定済みのケースも非同期に main へ戻し、呼び出しスレッド差を消す。
-    static func requestMicrophoneAccess(completion: @escaping (MicrophoneAuthorization) -> Void) {
+    /// completion は **常に MainActor 上** で呼ばれる（型で保証）。
+    /// 呼び出し側はスレッドを意識せず @MainActor の状態更新が書ける。
+    static func requestMicrophoneAccess(completion: @escaping @MainActor (MicrophoneAuthorization) -> Void) {
         let deliver: (MicrophoneAuthorization) -> Void = { auth in
-            DispatchQueue.main.async { completion(auth) }
+            Task { @MainActor in completion(auth) }
         }
         switch AVCaptureDevice.authorizationStatus(for: .audio) {
         case .authorized:
