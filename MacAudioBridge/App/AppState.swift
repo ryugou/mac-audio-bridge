@@ -311,10 +311,16 @@ final class AppState: ObservableObject {
         // 失敗時に数秒オーダーで遅延しうる。MainActor で同期実行するとメニューバー
         // UI がブロックされるため、autoRunQueue (serial) に送り、結果だけ MainActor
         // に戻す。serial 化することでトグル連打時の完了順入れ替わりも防ぐ。
-        // preferences の更新は成功後に行う（rollback で previous が読み出せるように）。
-        let previous = preferences.autoRun
+        //
+        // rollback 先は autoRunQueue 上で SMAppService の実状態 (isRegistered) を
+        // 読んで決める。didSet 時点で `preferences.autoRun` をキャプチャすると、
+        // 直前の操作が完了前で preferences が古いままのときに不正な rollback 先に
+        // なる (例: 連打で register 成功直後に unregister 失敗、rollback 先が
+        // 既に register 後の実状態と矛盾する false に戻ってしまう)。
         let target = autoRun
         autoRunQueue.async { [weak self] in
+            guard let self else { return }
+            let actualPrevious = LoginItemController.isRegistered
             let result: Result<Void, Error>
             do {
                 if target {
@@ -327,7 +333,6 @@ final class AppState: ObservableObject {
                 result = .failure(error)
             }
             Task { @MainActor in
-                guard let self else { return }
                 switch result {
                 case .success:
                     self.preferences.autoRun = target
@@ -335,8 +340,9 @@ final class AppState: ObservableObject {
                 case .failure(let error):
                     Log.app.error("autoRun change failed: \(error.localizedDescription)")
                     self.lastAutoRunError = error.localizedDescription
+                    self.preferences.autoRun = actualPrevious
                     self.isRollingBackAutoRun = true
-                    self.autoRun = previous
+                    self.autoRun = actualPrevious
                     self.isRollingBackAutoRun = false
                 }
             }
