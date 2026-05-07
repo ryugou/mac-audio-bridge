@@ -15,7 +15,11 @@ final class AppState: ObservableObject {
     @Published private(set) var defaultInputDevice: Device?
     @Published private(set) var defaultOutputDevice: Device?
     @Published var autoRun: Bool = false {
-        didSet { applyAutoRunChange() }
+        didSet {
+            // 再帰防止: init 中の代入や rollback の再代入で didSet が再発火するのを抑止する。
+            guard !isInitializingAutoRun, !isRollingBackAutoRun else { return }
+            applyAutoRunChange()
+        }
     }
 
     // MARK: - Dependencies
@@ -30,6 +34,10 @@ final class AppState: ObservableObject {
     private var monitor: DeviceMonitor?
     private var rebuildObserver: NSObjectProtocol?
     private var debounceWorkItem: DispatchWorkItem?
+
+    // autoRun の didSet 再帰を防ぐための内部フラグ
+    private var isInitializingAutoRun = false
+    private var isRollingBackAutoRun = false
     // engineQueue 上でのみ読み書きする「動作中」フラグ。
     // main.sync で MainActor の status を読みに行くと shutdown とのデッドロックが起きるため、
     // engineQueue 内で完結する別フラグを持つ。
@@ -47,7 +55,11 @@ final class AppState: ObservableObject {
         self.engine = engine
         self.inputChoice = preferences.inputChoice
         self.outputChoice = preferences.outputChoice
+
+        // init 中は SMAppService を呼ばない (テスト環境でも安全)
+        isInitializingAutoRun = true
         self.autoRun = preferences.autoRun
+        isInitializingAutoRun = false
 
         refreshDeviceLists()
     }
@@ -243,8 +255,10 @@ final class AppState: ObservableObject {
             }
         } catch {
             Log.app.error("autoRun change failed: \(error.localizedDescription)")
-            // ロールバック
+            // ロールバック (didSet の再発火を抑止する)
+            isRollingBackAutoRun = true
             autoRun = preferences.autoRun
+            isRollingBackAutoRun = false
         }
     }
 }
