@@ -1,0 +1,6 @@
+build/
+DerivedData/
+MacAudioBridge.xcodeproj/
+MacAudioBridge/Info.generated.plist
+.build/
+*.xcuserstate

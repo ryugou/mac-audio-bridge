@@ -1,0 +1,24 @@
+# Xcode
+build/
+DerivedData/
+*.xcodeproj/
+!project.yml
+xcuserdata/
+*.xcworkspace/
+*.xcuserstate
+
+# macOS
+.DS_Store
+
+# Swift Package Manager
+.build/
+Packages/
+Package.pins
+Package.resolved
+.swiftpm/
+
+# generated
+MacAudioBridge/Info.generated.plist
+
+# xcode-build-server (per-developer LSP config; run `xcode-build-server config` locally)
+buildServer.json

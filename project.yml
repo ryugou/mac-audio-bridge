@@ -1,0 +1,49 @@
+name: MacAudioBridge
+options:
+  bundleIdPrefix: com.ryugo
+  deploymentTarget:
+    macOS: "13.0"
+  defaultConfig: Debug
+
+settings:
+  base:
+    SWIFT_VERSION: "5.10"
+    MACOSX_DEPLOYMENT_TARGET: "13.0"
+    ENABLE_HARDENED_RUNTIME: NO
+    ENABLE_USER_SCRIPT_SANDBOXING: NO
+    CODE_SIGN_STYLE: Automatic
+    DEVELOPMENT_TEAM: ""
+
+targets:
+  MacAudioBridge:
+    type: application
+    platform: macOS
+    sources:
+      - path: MacAudioBridge
+    info:
+      path: MacAudioBridge/Info.generated.plist
+      properties:
+        CFBundleIdentifier: com.ryugo.mac-audio-bridge
+        CFBundleName: MacAudioBridge
+        CFBundleDisplayName: Mac Audio Bridge
+        CFBundleShortVersionString: "0.1.0"
+        CFBundleVersion: "1"
+        LSUIElement: true
+        LSMinimumSystemVersion: "13.0"
+        LSMultipleInstancesProhibited: true
+        NSMicrophoneUsageDescription: "MacAudioBridge は選択された入力デバイスから音声を取得し、選択された出力デバイスへパススルーします。"
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.ryugo.mac-audio-bridge
+
+  MacAudioBridgeTests:
+    type: bundle.unit-test
+    platform: macOS
+    sources:
+      - path: MacAudioBridgeTests
+    settings:
+      base:
+        GENERATE_INFOPLIST_FILE: YES
+        PRODUCT_BUNDLE_IDENTIFIER: com.ryugo.mac-audio-bridge.tests
+    dependencies:
+      - target: MacAudioBridge
