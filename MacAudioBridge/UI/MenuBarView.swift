@@ -41,6 +41,11 @@ struct MenuBarView: View {
         // Settings
         Toggle("ログイン時に自動起動 + 自動 Run", isOn: $state.autoRun)
 
+        // SMAppService 操作の失敗を UI に出す。トグルが戻った理由をユーザーに伝える。
+        if let autoRunError = state.lastAutoRunError {
+            Text("⚠ ログイン項目の更新失敗: \(autoRunError)").disabled(true)
+        }
+
         // 権限拒否時の補助
         if case .stopped(.micPermissionDenied) = state.status {
             Button("システム設定 > マイクを開く") {

@@ -1,16 +1,28 @@
 import Foundation
 import AVFoundation
 import CoreAudio
+import os
 
 /// 単一の入出力ペアの pass-thru を担うエンジン。
 /// engineQueue 上で start / stop / restart を直列実行する前提（並行性モデル §7.6 参照）。
 /// 将来マルチブリッジ拡張時はこのクラスを複数インスタンス化する。
 final class AudioBridgeEngine {
+    /// pass-thru tap → AVAudioPlayerNode 中継のキュー深さ警告閾値（バッファ数）。
+    /// 4800 frames@48kHz で約 100 ms / 1 buffer。`pendingBufferWarnThreshold` 個を
+    /// 超えると警告ログを出して backpressure 異常を可視化する。
+    private static let pendingBufferWarnThreshold = 8
+
     private let aggregateManager = AggregateDeviceManager()
     private var engine: AVAudioEngine?
     private var player: AVAudioPlayerNode?
     private var aggregateDeviceID: AudioDeviceID?
     private var configChangeObserver: NSObjectProtocol?
+    /// AVAudioPlayerNode に schedule 済みで未再生のバッファ数。
+    /// tap callback で +1、scheduleBuffer の completionHandler で -1。
+    /// real-time thread からも触られるため atomic 更新。
+    private let pendingBuffers = OSAllocatedUnfairLock<Int>(initialState: 0)
+    /// 直近の警告ログ時刻。1 秒に 1 回までに間引く。
+    private var lastBackpressureWarn = Date.distantPast
 
     /// 起動。事前に inputUID と outputUID は呼び出し側で解決済みであること。
     /// 同一 UID（feedback loop）の場合は呼び出し側で弾くこと。
@@ -51,8 +63,25 @@ final class AudioBridgeEngine {
         engine.attach(player)
         engine.connect(player, to: engine.outputNode, format: outputFormat)
 
-        engine.inputNode.installTap(onBus: 0, bufferSize: 4096, format: outputFormat) { [weak player] buffer, _ in
-            player?.scheduleBuffer(buffer, completionHandler: nil)
+        engine.inputNode.installTap(onBus: 0, bufferSize: 4096, format: outputFormat) { [weak self, weak player] buffer, _ in
+            guard let self, let player else { return }
+            // backpressure 観測: schedule 前後で pending count を増減し、
+            // 閾値を超えていたら 1 秒に 1 回まで warn ログを出す。
+            // 出力 rate < 入力 rate やシステム全体のスタビング時に検知できる。
+            let depth = self.pendingBuffers.withLock { state in
+                state += 1
+                return state
+            }
+            if depth > Self.pendingBufferWarnThreshold {
+                let now = Date()
+                if now.timeIntervalSince(self.lastBackpressureWarn) > 1.0 {
+                    self.lastBackpressureWarn = now
+                    Log.engine.error("tap backpressure: pending buffers=\(depth, privacy: .public) (threshold=\(Self.pendingBufferWarnThreshold, privacy: .public))")
+                }
+            }
+            player.scheduleBuffer(buffer) { [weak self] in
+                self?.pendingBuffers.withLock { state in state -= 1 }
+            }
         }
 
         try engine.start()
@@ -93,6 +122,7 @@ final class AudioBridgeEngine {
         player = nil
         engine?.stop()
         engine = nil
+        pendingBuffers.withLock { $0 = 0 }
 
         if destroyAggregate, let aggID = aggregateDeviceID {
             try? aggregateManager.destroy(aggID)
