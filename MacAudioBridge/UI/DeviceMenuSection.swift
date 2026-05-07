@@ -12,14 +12,10 @@ struct DeviceMenuSection: View {
             Button {
                 onSelect(.systemDefault)
             } label: {
-                HStack {
-                    // 未選択時は opacity(0) で領域を残しつつ非表示。
-                    // 空文字 SF Symbol を渡すと SF Symbols の解決失敗ログが出るため避ける。
-                    Image(systemName: "checkmark")
-                        .frame(width: 14)
-                        .opacity(currentChoice == .systemDefault ? 1 : 0)
-                    Text("System Default (\(defaultDevice?.name ?? "—"))")
-                }
+                checkmarkRow(
+                    isSelected: currentChoice == .systemDefault,
+                    text: "System Default (\(defaultDevice?.name ?? "—"))"
+                )
             }
 
             Divider()
@@ -28,14 +24,24 @@ struct DeviceMenuSection: View {
                 Button {
                     onSelect(.specific(uid: device.uid))
                 } label: {
-                    HStack {
-                        Image(systemName: "checkmark")
-                            .frame(width: 14)
-                            .opacity(isSelected(device) ? 1 : 0)
-                        Text(device.name)
-                    }
+                    checkmarkRow(isSelected: isSelected(device), text: device.name)
                 }
             }
+        }
+    }
+
+    /// MenuBarExtra(.menu) の menu item では `Image.opacity(0)` での非表示が
+    /// system rendering に伝わらず、すべての行にチェックマークが描画される
+    /// 不具合があるため、`if` で Image 自体を出し分ける。
+    @ViewBuilder
+    private func checkmarkRow(isSelected: Bool, text: String) -> some View {
+        HStack {
+            if isSelected {
+                Image(systemName: "checkmark").frame(width: 14)
+            } else {
+                Spacer().frame(width: 14)
+            }
+            Text(text)
         }
     }
 
