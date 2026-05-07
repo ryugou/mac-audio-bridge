@@ -15,7 +15,9 @@ final class Preferences {
 
     var inputChoice: DeviceChoice {
         get {
-            DeviceChoice(storageString: store.string(forKey: Keys.inputDevice) ?? "system_default")
+            // 永続化表現の文字列リテラルは DeviceChoice 側に集約。
+            // store にエントリが無ければ .systemDefault を返す。
+            store.string(forKey: Keys.inputDevice).map(DeviceChoice.init(storageString:)) ?? .systemDefault
         }
         set {
             store.set(newValue.storageString, forKey: Keys.inputDevice)
@@ -24,7 +26,7 @@ final class Preferences {
 
     var outputChoice: DeviceChoice {
         get {
-            DeviceChoice(storageString: store.string(forKey: Keys.outputDevice) ?? "system_default")
+            store.string(forKey: Keys.outputDevice).map(DeviceChoice.init(storageString:)) ?? .systemDefault
         }
         set {
             store.set(newValue.storageString, forKey: Keys.outputDevice)

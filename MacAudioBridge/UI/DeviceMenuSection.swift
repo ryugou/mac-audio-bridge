@@ -13,8 +13,11 @@ struct DeviceMenuSection: View {
                 onSelect(.systemDefault)
             } label: {
                 HStack {
-                    Image(systemName: currentChoice == .systemDefault ? "checkmark" : "")
+                    // 未選択時は opacity(0) で領域を残しつつ非表示。
+                    // 空文字 SF Symbol を渡すと SF Symbols の解決失敗ログが出るため避ける。
+                    Image(systemName: "checkmark")
                         .frame(width: 14)
+                        .opacity(currentChoice == .systemDefault ? 1 : 0)
                     Text("System Default (\(defaultDevice?.name ?? "—"))")
                 }
             }
@@ -26,8 +29,9 @@ struct DeviceMenuSection: View {
                     onSelect(.specific(uid: device.uid))
                 } label: {
                     HStack {
-                        Image(systemName: isSelected(device) ? "checkmark" : "")
+                        Image(systemName: "checkmark")
                             .frame(width: 14)
+                            .opacity(isSelected(device) ? 1 : 0)
                         Text(device.name)
                     }
                 }

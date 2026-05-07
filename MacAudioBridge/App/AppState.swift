@@ -291,26 +291,39 @@ final class AppState: ObservableObject {
     }
 
     private func applyAutoRunChange() {
-        // preferences の更新は SMAppService 操作の成功後に行う。
-        // 失敗時のロールバックで preferences の前回値が必要になるため、先に preferences を
-        // 書き換えてしまうと「変更前の値」が失われ、autoRun = preferences.autoRun が新値のまま
-        // になってロールバック不能になる。
+        // SMAppService の register / unregister は ServiceManagement 経由で
+        // 失敗時に数秒オーダーで遅延しうる。MainActor で同期実行すると
+        // メニューバー UI がブロックされるため、操作はバックグラウンドキューに送り、
+        // 結果反映だけ MainActor に戻す。
+        // preferences の更新は成功後に行う（rollback で previous が読み出せるように）。
         let previous = preferences.autoRun
         let target = autoRun
-        do {
-            if target {
-                try LoginItemController.register()
-            } else {
-                try LoginItemController.unregister()
+        DispatchQueue.global(qos: .userInitiated).async { [weak self] in
+            let result: Result<Void, Error>
+            do {
+                if target {
+                    try LoginItemController.register()
+                } else {
+                    try LoginItemController.unregister()
+                }
+                result = .success(())
+            } catch {
+                result = .failure(error)
             }
-            preferences.autoRun = target
-            lastAutoRunError = nil
-        } catch {
-            Log.app.error("autoRun change failed: \(error.localizedDescription)")
-            lastAutoRunError = error.localizedDescription
-            isRollingBackAutoRun = true
-            autoRun = previous
-            isRollingBackAutoRun = false
+            Task { @MainActor in
+                guard let self else { return }
+                switch result {
+                case .success:
+                    self.preferences.autoRun = target
+                    self.lastAutoRunError = nil
+                case .failure(let error):
+                    Log.app.error("autoRun change failed: \(error.localizedDescription)")
+                    self.lastAutoRunError = error.localizedDescription
+                    self.isRollingBackAutoRun = true
+                    self.autoRun = previous
+                    self.isRollingBackAutoRun = false
+                }
+            }
         }
     }
 }

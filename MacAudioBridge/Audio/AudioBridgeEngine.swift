@@ -65,6 +65,31 @@ final class AudioBridgeEngine {
 
         engine.inputNode.installTap(onBus: 0, bufferSize: 4096, format: outputFormat) { [weak self, weak player] buffer, _ in
             guard let self, let player else { return }
+
+            // tap が返す AVAudioPCMBuffer は CoreAudio 側で再利用される可能性があるため、
+            // scheduleBuffer に渡す前に必ずコピーを取る (defensive copy)。
+            // コピーしないと CoreAudio が次の cycle で同じ領域を上書きし、
+            // 再生中のデータが破損する可能性がある。
+            guard let copy = AVAudioPCMBuffer(pcmFormat: buffer.format, frameCapacity: buffer.frameCapacity) else {
+                return
+            }
+            copy.frameLength = buffer.frameLength
+            let bytesPerFrame = Int(buffer.format.streamDescription.pointee.mBytesPerFrame)
+            let byteCount = Int(buffer.frameLength) * bytesPerFrame
+            if let src = buffer.floatChannelData, let dst = copy.floatChannelData {
+                for ch in 0..<Int(buffer.format.channelCount) {
+                    memcpy(dst[ch], src[ch], byteCount)
+                }
+            } else if let src = buffer.int16ChannelData, let dst = copy.int16ChannelData {
+                for ch in 0..<Int(buffer.format.channelCount) {
+                    memcpy(dst[ch], src[ch], byteCount)
+                }
+            } else if let src = buffer.int32ChannelData, let dst = copy.int32ChannelData {
+                for ch in 0..<Int(buffer.format.channelCount) {
+                    memcpy(dst[ch], src[ch], byteCount)
+                }
+            }
+
             // backpressure 観測: schedule 前後で pending count を増減し、
             // 閾値を超えていたら 1 秒に 1 回まで warn ログを出す。
             // 出力 rate < 入力 rate やシステム全体のスタビング時に検知できる。
@@ -79,8 +104,10 @@ final class AudioBridgeEngine {
                     Log.engine.error("tap backpressure: pending buffers=\(depth, privacy: .public) (threshold=\(Self.pendingBufferWarnThreshold, privacy: .public))")
                 }
             }
-            player.scheduleBuffer(buffer) { [weak self] in
-                self?.pendingBuffers.withLock { state in state -= 1 }
+            player.scheduleBuffer(copy) { [weak self] in
+                // stopInternal で 0 にリセットされた後に completion が遅れて到達した場合に
+                // 負数にならないよう、下限 0 で clamp する。
+                self?.pendingBuffers.withLock { state in state = max(0, state - 1) }
             }
         }
 
