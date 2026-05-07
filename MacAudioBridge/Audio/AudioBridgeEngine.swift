@@ -3,6 +3,17 @@ import AVFoundation
 import CoreAudio
 import os
 
+enum AudioBridgeEngineError: Error, LocalizedError {
+    case invalidNodeFormat(sampleRate: Double, channelCount: AVAudioChannelCount)
+
+    var errorDescription: String? {
+        switch self {
+        case .invalidNodeFormat(let sr, let ch):
+            return "AVAudioEngine ノードの format が無効です (sr=\(sr), ch=\(ch))"
+        }
+    }
+}
+
 /// 単一の入出力ペアの pass-thru を担うエンジン。
 /// engineQueue 上で start / stop / restart を直列実行する前提（並行性モデル §7.6 参照）。
 /// 将来マルチブリッジ拡張時はこのクラスを複数インスタンス化する。
@@ -57,6 +68,19 @@ final class AudioBridgeEngine {
         try engine.outputNode.auAudioUnit.setDeviceID(aggID)
 
         let outputFormat = engine.outputNode.outputFormat(forBus: 0)
+
+        // setDeviceID 直後は HAL がデバイスとの format ネゴシエーション中で
+        // sampleRate/channelCount = 0 の無効 format を返すケースがある。
+        // 無効 format を `AVAudioEngine.connect(_:to:format:)` に渡すと
+        // ObjC 例外が投げられ Swift では catch できず即 abort する (SIGABRT)。
+        // 事前に validate して throw に倒し、上位に通常エラーとして返す。
+        guard outputFormat.sampleRate > 0, outputFormat.channelCount > 0 else {
+            Log.engine.error("outputNode format invalid: sr=\(outputFormat.sampleRate, privacy: .public) ch=\(outputFormat.channelCount, privacy: .public)")
+            throw AudioBridgeEngineError.invalidNodeFormat(
+                sampleRate: outputFormat.sampleRate,
+                channelCount: outputFormat.channelCount
+            )
+        }
 
         // pass-thru 実装：tap + AVAudioPlayerNode 中継方式
         // tap も player 接続も outputFormat に統一して、
