@@ -30,6 +30,7 @@ targets:
         CFBundleVersion: "1"
         LSUIElement: true
         LSMinimumSystemVersion: "13.0"
+        LSMultipleInstancesProhibited: true
         NSMicrophoneUsageDescription: "MacAudioBridge は選択された入力デバイスから音声を取得し、選択された出力デバイスへパススルーします。"
     settings:
       base:

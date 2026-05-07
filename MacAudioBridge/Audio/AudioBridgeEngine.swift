@@ -11,8 +11,6 @@ final class AudioBridgeEngine {
     private var player: AVAudioPlayerNode?
     private var aggregateDeviceID: AudioDeviceID?
     private var configChangeObserver: NSObjectProtocol?
-    private var tapCallbackCount: Int = 0
-    private var lastTapLogTime: Date = .distantPast
 
     /// 起動。事前に inputUID と outputUID は呼び出し側で解決済みであること。
     /// 同一 UID（feedback loop）の場合は呼び出し側で弾くこと。
@@ -27,60 +25,25 @@ final class AudioBridgeEngine {
         try engine.inputNode.auAudioUnit.setDeviceID(aggID)
         try engine.outputNode.auAudioUnit.setDeviceID(aggID)
 
-        let inputFormat = engine.inputNode.outputFormat(forBus: 0)
         let outputFormat = engine.outputNode.outputFormat(forBus: 0)
-        let mixerInFormat = engine.mainMixerNode.inputFormat(forBus: 0)
-        let mixerOutFormat = engine.mainMixerNode.outputFormat(forBus: 0)
-        Log.engine.info("inputNode outputFormat: sr=\(inputFormat.sampleRate, privacy: .public) ch=\(inputFormat.channelCount, privacy: .public) interleaved=\(inputFormat.isInterleaved, privacy: .public) standard=\(inputFormat.isStandard, privacy: .public) commonFmt=\(inputFormat.commonFormat.rawValue, privacy: .public)")
-        Log.engine.info("outputNode outputFormat: sr=\(outputFormat.sampleRate, privacy: .public) ch=\(outputFormat.channelCount, privacy: .public) interleaved=\(outputFormat.isInterleaved, privacy: .public) standard=\(outputFormat.isStandard, privacy: .public) commonFmt=\(outputFormat.commonFormat.rawValue, privacy: .public)")
-        Log.engine.info("mainMixer inputFormat[0]: sr=\(mixerInFormat.sampleRate, privacy: .public) ch=\(mixerInFormat.channelCount, privacy: .public)")
-        Log.engine.info("mainMixer outputFormat[0]: sr=\(mixerOutFormat.sampleRate, privacy: .public) ch=\(mixerOutFormat.channelCount, privacy: .public)")
 
         // pass-thru 実装：tap + AVAudioPlayerNode 中継方式
-        // tap も player 接続も outputFormat (48kHz 2ch) に統一して、
-        // AVAudioEngine 内蔵のコンバータで input format → output format 変換させる。
-        // mainMixer をバイパスして player → outputNode 直接接続することで、
-        // mainMixer のデフォルト 44.1kHz とのミスマッチも回避する。
+        // tap も player 接続も outputFormat に統一して、
+        // AVAudioEngine 内蔵コンバータで input → output format 変換させる。
+        // mainMixer をバイパスして player → outputNode 直接接続することで
+        // mainMixer のデフォルトサンプルレートとのミスマッチも回避する。
         let player = AVAudioPlayerNode()
         engine.attach(player)
         engine.connect(player, to: engine.outputNode, format: outputFormat)
 
-        Log.engine.info("attached nodes count=\(engine.attachedNodes.count, privacy: .public)")
-        Log.engine.info("player connected to outputNode with format sr=\(outputFormat.sampleRate, privacy: .public) ch=\(outputFormat.channelCount, privacy: .public)")
-
-        tapCallbackCount = 0
-        lastTapLogTime = .distantPast
-        engine.inputNode.installTap(onBus: 0, bufferSize: 4096, format: outputFormat) { [weak self, weak player] buffer, _ in
-            guard let self else { return }
-            self.tapCallbackCount += 1
-            let count = self.tapCallbackCount
-            let now = Date()
-            // 最初の 3 回 + 1 秒に 1 回ログ
-            if count <= 3 || now.timeIntervalSince(self.lastTapLogTime) > 1.0 {
-                self.lastTapLogTime = now
-                let frames = buffer.frameLength
-                var peak: Float = 0
-                if let ch0 = buffer.floatChannelData?[0] {
-                    for i in 0..<Int(frames) {
-                        let v = abs(ch0[i])
-                        if v > peak { peak = v }
-                    }
-                }
-                Log.engine.info("tap #\(count, privacy: .public) frames=\(frames, privacy: .public) ch=\(buffer.format.channelCount, privacy: .public) peak=\(peak, privacy: .public)")
-            }
+        engine.inputNode.installTap(onBus: 0, bufferSize: 4096, format: outputFormat) { [weak player] buffer, _ in
             player?.scheduleBuffer(buffer, completionHandler: nil)
         }
 
-        do {
-            try engine.start()
-        } catch {
-            Log.engine.error("engine.start() threw: \(error.localizedDescription, privacy: .public) | \(String(describing: error), privacy: .public)")
-            throw error
-        }
+        try engine.start()
         player.play()
         self.engine = engine
         self.player = player
-        Log.engine.info("engine.isRunning=\(engine.isRunning, privacy: .public) player.isPlaying=\(player.isPlaying, privacy: .public)")
 
         // configurationChangeNotification は AVAudioEngine 起動直後にも通常発火するため、
         // 自動再構築のトリガーにすると無限ループになる。ログのみ出して無視する。
