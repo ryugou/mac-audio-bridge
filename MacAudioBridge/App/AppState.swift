@@ -245,6 +245,18 @@ final class AppState: ObservableObject {
             failStart(.feedbackLoop)
             return
         }
+        // macOS の仮想 / Stacked Output (Spatial Audio や AirPlay 統合等) は
+        // UID が `~:` で始まる。これらを AggregateDevice の sub-device に入れると
+        // format ネゴシエーションが完了せず、AVAudioEngine の outputNode が sr=0/ch=0
+        // を返してしまう。事前に検知して具体的デバイスを選ぶようユーザーに促す。
+        if inputUID.hasPrefix("~:") {
+            failStart(.engineFailed(message: "入力に仮想デバイスが選ばれています (\(inputUID))。Input Device で具体的なデバイスを選んでください。"))
+            return
+        }
+        if outputUID.hasPrefix("~:") {
+            failStart(.engineFailed(message: "出力に仮想デバイスが選ばれています (\(outputUID))。Output Device で具体的なデバイスを選んでください。"))
+            return
+        }
         do {
             try engine.start(inputUID: inputUID, outputUID: outputUID)
             engineRunningOnEngineQ = true
