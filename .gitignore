@@ -19,3 +19,6 @@ Package.resolved
 
 # generated
 MacAudioBridge/Info.generated.plist
+
+# xcode-build-server (per-developer LSP config; run `xcode-build-server config` locally)
+buildServer.json
