@@ -20,14 +20,13 @@ final class CoreAudioDeviceProvider: DeviceProvider {
         return makeDevice(id: id)
     }
 
-    // MARK: - Private
+    // MARK: - Internal
 
-    private func allDevices() -> [Device] {
-        var address = AudioObjectPropertyAddress(
-            mSelector: kAudioHardwarePropertyDevices,
-            mScope: kAudioObjectPropertyScopeGlobal,
-            mElement: kAudioObjectPropertyElementMain
-        )
+    /// 接続中の全デバイスを 1 度の HAL enumeration で返す。
+    /// `connectedInputDevices` / `connectedOutputDevices` を個別に呼ぶより HAL 呼び出しが半分になるため、
+    /// 列挙したい呼び出し側はこちらを使う。
+    func allDevices() -> [Device] {
+        var address = AudioObjectPropertyAddress.global(kAudioHardwarePropertyDevices)
         var dataSize: UInt32 = 0
         var status = AudioObjectGetPropertyDataSize(
             AudioObjectID(kAudioObjectSystemObject), &address, 0, nil, &dataSize
@@ -49,11 +48,7 @@ final class CoreAudioDeviceProvider: DeviceProvider {
     }
 
     private func defaultDeviceID(selector: AudioObjectPropertySelector) -> AudioDeviceID? {
-        var address = AudioObjectPropertyAddress(
-            mSelector: selector,
-            mScope: kAudioObjectPropertyScopeGlobal,
-            mElement: kAudioObjectPropertyElementMain
-        )
+        var address = AudioObjectPropertyAddress.global(selector)
         var deviceID = AudioDeviceID(0)
         var dataSize = UInt32(MemoryLayout<AudioDeviceID>.size)
         let status = AudioObjectGetPropertyData(
@@ -74,24 +69,16 @@ final class CoreAudioDeviceProvider: DeviceProvider {
     }
 
     private func stringProperty(deviceID: AudioDeviceID, selector: AudioObjectPropertySelector) -> String? {
-        var address = AudioObjectPropertyAddress(
-            mSelector: selector,
-            mScope: kAudioObjectPropertyScopeGlobal,
-            mElement: kAudioObjectPropertyElementMain
-        )
-        var dataSize = UInt32(MemoryLayout<CFString?>.size)
-        var cfString: CFString?
-        let status = AudioObjectGetPropertyData(deviceID, &address, 0, nil, &dataSize, &cfString)
-        guard status == noErr, let cf = cfString else { return nil }
+        var address = AudioObjectPropertyAddress.global(selector)
+        var dataSize = UInt32(MemoryLayout<Unmanaged<CFString>?>.size)
+        var unmanaged: Unmanaged<CFString>?
+        let status = AudioObjectGetPropertyData(deviceID, &address, 0, nil, &dataSize, &unmanaged)
+        guard status == noErr, let cf = unmanaged?.takeRetainedValue() else { return nil }
         return cf as String
     }
 
     private func streamCount(deviceID: AudioDeviceID, scope: AudioObjectPropertyScope) -> Int {
-        var address = AudioObjectPropertyAddress(
-            mSelector: kAudioDevicePropertyStreams,
-            mScope: scope,
-            mElement: kAudioObjectPropertyElementMain
-        )
+        var address = AudioObjectPropertyAddress.scoped(kAudioDevicePropertyStreams, scope: scope)
         var dataSize: UInt32 = 0
         let status = AudioObjectGetPropertyDataSize(deviceID, &address, 0, nil, &dataSize)
         guard status == noErr else { return 0 }

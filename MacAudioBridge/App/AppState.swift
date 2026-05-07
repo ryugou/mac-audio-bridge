@@ -23,25 +23,27 @@ final class AppState: ObservableObject {
     }
 
     // MARK: - Dependencies
-
-    private let preferences: Preferences
-    private let provider: DeviceProvider
-    private let engine: AudioBridgeEngine
+    //
+    // engineQueue 経由で参照する依存・ステートは nonisolated(unsafe) で MainActor 隔離から外す。
+    // engineQueue は serial DispatchQueue なので、その上で操作する限り race-free。
+    // Swift の strict concurrency check では静的に判別できないため、unsafe を明示する。
+    private nonisolated(unsafe) let preferences: Preferences
+    private nonisolated(unsafe) let provider: DeviceProvider
+    private nonisolated(unsafe) let engine: AudioBridgeEngine
     private let engineQueue = DispatchQueue(
         label: "com.ryugo.mac-audio-bridge.engine",
         qos: .userInitiated
     )
     private var monitor: DeviceMonitor?
-    private var rebuildObserver: NSObjectProtocol?
-    private var debounceWorkItem: DispatchWorkItem?
+    private nonisolated(unsafe) var debounceWorkItem: DispatchWorkItem?
 
-    // autoRun の didSet 再帰を防ぐための内部フラグ
+    // autoRun の didSet 再帰を防ぐための内部フラグ (MainActor 上のみで操作)
     private var isInitializingAutoRun = false
     private var isRollingBackAutoRun = false
     // engineQueue 上でのみ読み書きする「動作中」フラグ。
     // main.sync で MainActor の status を読みに行くと shutdown とのデッドロックが起きるため、
     // engineQueue 内で完結する別フラグを持つ。
-    private var engineRunningOnEngineQ: Bool = false
+    private nonisolated(unsafe) var engineRunningOnEngineQ: Bool = false
 
     // MARK: - Init
 
@@ -77,27 +79,12 @@ final class AppState: ObservableObject {
         monitor.start()
         self.monitor = monitor
 
-        rebuildObserver = NotificationCenter.default.addObserver(
-            forName: .audioBridgeShouldRebuild,
-            object: nil,
-            queue: nil
-        ) { [weak self] _ in
-            self?.engineQueue.async {
-                self?.rebuildSync()
-            }
-        }
-
         if preferences.autoRun {
-            Task { @MainActor in
-                self.toggleOn()
-            }
+            toggleOn()
         }
     }
 
     func shutdown() {
-        if let observer = rebuildObserver {
-            NotificationCenter.default.removeObserver(observer)
-        }
         monitor?.stop()
         engineQueue.sync {
             engine.stop()
@@ -129,11 +116,10 @@ final class AppState: ObservableObject {
 
     func toggleOff() {
         engineQueue.async { [weak self] in
-            self?.engine.stop()
-            self?.engineRunningOnEngineQ = false
-            Task { @MainActor in
-                self?.status = .stopped(.userToggledOff)
-            }
+            guard let self else { return }
+            self.engine.stop()
+            self.engineRunningOnEngineQ = false
+            self.setStatus(.stopped(.userToggledOff))
         }
     }
 
@@ -151,50 +137,48 @@ final class AppState: ObservableObject {
 
     // MARK: - Private (engineQueue)
 
-    private func handleMonitorEvent(_ event: DeviceMonitor.Event) {
-        // engineQueue 上で呼ばれる
+    nonisolated private func handleMonitorEvent(_ event: DeviceMonitor.Event) {
+        Task { @MainActor in self.refreshDeviceLists() }
         switch event {
         case .deviceListChanged:
-            Task { @MainActor in
-                self.refreshDeviceLists()
-            }
             // 自分の AggregateDevice の create/destroy でも発火するため、
-            // 無条件に再構築すると自己ループになる。
-            // 選択中のデバイスが消えていた場合のみ stop する。
+            // 無条件に再構築すると自己ループになる。選択中のデバイスが消えた時のみ stop。
             checkSelectedDeviceStillConnected()
         case .defaultInputChanged:
-            Task { @MainActor in
-                self.refreshDeviceLists()
-            }
-            // .systemDefault 追従中で動作中の時のみ再構築
-            if preferences.inputChoice == .systemDefault, engineRunningOnEngineQ {
-                scheduleRebuildOnEngineQueue()
-            }
+            rebuildIfFollowingDefault(preferences.inputChoice)
         case .defaultOutputChanged:
-            Task { @MainActor in
-                self.refreshDeviceLists()
-            }
-            if preferences.outputChoice == .systemDefault, engineRunningOnEngineQ {
-                scheduleRebuildOnEngineQueue()
-            }
+            rebuildIfFollowingDefault(preferences.outputChoice)
         }
     }
 
-    private func checkSelectedDeviceStillConnected() {
-        // engineQueue 上で実行
+    nonisolated private func rebuildIfFollowingDefault(_ choice: DeviceChoice) {
+        if choice == .systemDefault, engineRunningOnEngineQ {
+            scheduleRebuildOnEngineQueue()
+        }
+    }
+
+    nonisolated private func checkSelectedDeviceStillConnected() {
         guard engineRunningOnEngineQ else { return }
-        let inputResolved = resolve(choice: preferences.inputChoice, defaultDevice: provider.defaultInputDevice, list: provider.connectedInputDevices)
-        let outputResolved = resolve(choice: preferences.outputChoice, defaultDevice: provider.defaultOutputDevice, list: provider.connectedOutputDevices)
-        if inputResolved == nil || outputResolved == nil {
-            let lostUID = inputResolved == nil
-                ? (preferences.inputChoice.storageString)
-                : (preferences.outputChoice.storageString)
+        let (input, output) = resolveCurrentSelection()
+        if input == nil || output == nil {
+            let lostUID = input == nil
+                ? preferences.inputChoice.storageString
+                : preferences.outputChoice.storageString
             engine.stop()
             engineRunningOnEngineQ = false
-            Task { @MainActor in
-                self.status = .stopped(.deviceDisconnected(uid: lostUID))
-            }
+            setStatus(.stopped(.deviceDisconnected(uid: lostUID)))
         }
+    }
+
+    nonisolated private func setStatus(_ newStatus: BridgeStatus) {
+        Task { @MainActor in self.status = newStatus }
+    }
+
+    nonisolated private func resolveCurrentSelection() -> (input: ResolvedDevice?, output: ResolvedDevice?) {
+        (
+            resolve(choice: preferences.inputChoice, defaultDevice: provider.defaultInputDevice, list: provider.connectedInputDevices),
+            resolve(choice: preferences.outputChoice, defaultDevice: provider.defaultOutputDevice, list: provider.connectedOutputDevices)
+        )
     }
 
     private func scheduleRebuild() {
@@ -203,7 +187,7 @@ final class AppState: ObservableObject {
         }
     }
 
-    private func scheduleRebuildOnEngineQueue() {
+    nonisolated private func scheduleRebuildOnEngineQueue() {
         debounceWorkItem?.cancel()
         let work = DispatchWorkItem { [weak self] in
             self?.rebuildSync()
@@ -212,43 +196,33 @@ final class AppState: ObservableObject {
         engineQueue.asyncAfter(deadline: .now() + 0.3, execute: work)
     }
 
-    private func startSync() {
-        // engineQueue 上で実行。permission チェックは toggleOn 経由で MainActor で済んでいる前提。
-        let inputResolved = resolve(choice: preferences.inputChoice, defaultDevice: provider.defaultInputDevice, list: provider.connectedInputDevices)
-        let outputResolved = resolve(choice: preferences.outputChoice, defaultDevice: provider.defaultOutputDevice, list: provider.connectedOutputDevices)
-
-        guard let inputUID = inputResolved?.uid, let outputUID = outputResolved?.uid else {
-            engineRunningOnEngineQ = false
-            Task { @MainActor in
-                self.status = .stopped(.engineFailed(message: "no system default"))
-            }
+    nonisolated private func startSync() {
+        // permission チェックは toggleOn 経由で MainActor で済んでいる前提。
+        let (input, output) = resolveCurrentSelection()
+        guard let inputUID = input?.uid, let outputUID = output?.uid else {
+            failStart(.engineFailed(message: "no system default"))
             return
         }
-
         if FeedbackLoopDetector.isLoop(inputUID: inputUID, outputUID: outputUID) {
-            engineRunningOnEngineQ = false
-            Task { @MainActor in
-                self.status = .stopped(.feedbackLoop)
-            }
+            failStart(.feedbackLoop)
             return
         }
-
         do {
             try engine.start(inputUID: inputUID, outputUID: outputUID)
             engineRunningOnEngineQ = true
-            Task { @MainActor in
-                self.status = .running
-            }
+            setStatus(.running)
         } catch {
-            engineRunningOnEngineQ = false
             Log.engine.error("start failed: \(error.localizedDescription)")
-            Task { @MainActor in
-                self.status = .stopped(.engineFailed(message: error.localizedDescription))
-            }
+            failStart(.engineFailed(message: error.localizedDescription))
         }
     }
 
-    private func rebuildSync() {
+    nonisolated private func failStart(_ reason: StopReason) {
+        engineRunningOnEngineQ = false
+        setStatus(.stopped(reason))
+    }
+
+    nonisolated private func rebuildSync() {
         // engineQueue 上で実行。動作中のみ再構築（idle のままなら何もしない）。
         // main.sync は使わず、engineQueue ローカルの engineRunningOnEngineQ で判定する。
         guard engineRunningOnEngineQ else { return }
@@ -257,7 +231,7 @@ final class AppState: ObservableObject {
         startSync()
     }
 
-    private func resolve(choice: DeviceChoice, defaultDevice: Device?, list: [Device]) -> ResolvedDevice? {
+    nonisolated private func resolve(choice: DeviceChoice, defaultDevice: Device?, list: [Device]) -> ResolvedDevice? {
         let resolvedDefault = defaultDevice.map { provider.resolvedDevice(for: $0) }
         let resolvedList = list.map { provider.resolvedDevice(for: $0) }
         return DeviceSelection.resolve(
@@ -268,10 +242,15 @@ final class AppState: ObservableObject {
     }
 
     private func refreshDeviceLists() {
-        connectedInputDevices = provider.connectedInputDevices
-        connectedOutputDevices = provider.connectedOutputDevices
-        defaultInputDevice = provider.defaultInputDevice
-        defaultOutputDevice = provider.defaultOutputDevice
+        // 変化があったプロパティだけ書き換えて、SwiftUI の不要な再描画を抑える。
+        let newInputs = provider.connectedInputDevices
+        if newInputs != connectedInputDevices { connectedInputDevices = newInputs }
+        let newOutputs = provider.connectedOutputDevices
+        if newOutputs != connectedOutputDevices { connectedOutputDevices = newOutputs }
+        let newDefaultIn = provider.defaultInputDevice
+        if newDefaultIn != defaultInputDevice { defaultInputDevice = newDefaultIn }
+        let newDefaultOut = provider.defaultOutputDevice
+        if newDefaultOut != defaultOutputDevice { defaultOutputDevice = newDefaultOut }
     }
 
     private func applyAutoRunChange() {

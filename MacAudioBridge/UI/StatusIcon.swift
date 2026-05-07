@@ -15,16 +15,20 @@ enum StatusIcon {
     }
 
     /// メニューバーアイコン用の色付き SwiftUI Image。
+    @ViewBuilder
     static func image(for status: BridgeStatus) -> some View {
-        let name = systemImageName(for: status)
-        let img = Image(systemName: name)
+        let img = Image(systemName: systemImageName(for: status))
         switch status {
-        case .stopped(.feedbackLoop): return AnyView(img.foregroundStyle(.yellow))
+        case .stopped(.feedbackLoop):
+            img.foregroundStyle(.yellow)
         case .stopped(.deviceDisconnected),
              .stopped(.micPermissionDenied),
-             .stopped(.engineFailed): return AnyView(img.foregroundStyle(.red))
-        case .idle, .stopped(.userToggledOff): return AnyView(img.foregroundStyle(.secondary))
-        default: return AnyView(img)
+             .stopped(.engineFailed):
+            img.foregroundStyle(.red)
+        case .idle, .stopped(.userToggledOff):
+            img.foregroundStyle(.secondary)
+        default:
+            img
         }
     }
 }

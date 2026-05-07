@@ -60,14 +60,12 @@ final class AggregateDeviceManager {
     /// 多重起動は §5.1 で防いでいるため、自プロセスのアクティブ Aggregate を消す心配はない。
     func cleanupOrphans() {
         let provider = CoreAudioDeviceProvider()
-        for device in provider.connectedInputDevices + provider.connectedOutputDevices {
-            if device.uid.hasPrefix(Self.uidPrefix) {
-                let status = AudioHardwareDestroyAggregateDevice(device.id)
-                if status == noErr {
-                    Log.aggregate.info("cleaned orphan \(device.uid)")
-                } else {
-                    Log.aggregate.error("orphan cleanup failed \(device.uid) status=\(status)")
-                }
+        for device in provider.allDevices() where device.uid.hasPrefix(Self.uidPrefix) {
+            let status = AudioHardwareDestroyAggregateDevice(device.id)
+            if status == noErr {
+                Log.aggregate.info("cleaned orphan \(device.uid, privacy: .public)")
+            } else {
+                Log.aggregate.error("orphan cleanup failed \(device.uid, privacy: .public) status=\(status, privacy: .public)")
             }
         }
     }

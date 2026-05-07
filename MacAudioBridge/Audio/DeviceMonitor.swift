@@ -58,11 +58,7 @@ final class DeviceMonitor {
     // MARK: - Private
 
     private func addListener(selector: AudioObjectPropertySelector, event: Event) {
-        var address = AudioObjectPropertyAddress(
-            mSelector: selector,
-            mScope: kAudioObjectPropertyScopeGlobal,
-            mElement: kAudioObjectPropertyElementMain
-        )
+        var address = AudioObjectPropertyAddress.global(selector)
         let block: AudioObjectPropertyListenerBlock = { [weak self] _, _ in
             self?.onEvent(event)
         }

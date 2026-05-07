@@ -90,6 +90,3 @@ final class AudioBridgeEngine {
     }
 }
 
-extension Notification.Name {
-    static let audioBridgeShouldRebuild = Notification.Name("com.ryugo.mac-audio-bridge.shouldRebuild")
-}
