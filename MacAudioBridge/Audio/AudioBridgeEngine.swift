@@ -8,8 +8,8 @@ import os
 /// 将来マルチブリッジ拡張時はこのクラスを複数インスタンス化する。
 final class AudioBridgeEngine {
     /// pass-thru tap → AVAudioPlayerNode 中継のキュー深さ警告閾値（バッファ数）。
-    /// 4800 frames@48kHz で約 100 ms / 1 buffer。`pendingBufferWarnThreshold` 個を
-    /// 超えると警告ログを出して backpressure 異常を可視化する。
+    /// installTap の bufferSize=4096 / 48 kHz で 1 buffer ≈ 85 ms。
+    /// 閾値 8 個 ≈ 680 ms 相当を超えると警告ログを出して backpressure 異常を可視化する。
     private static let pendingBufferWarnThreshold = 8
 
     private let aggregateManager = AggregateDeviceManager()

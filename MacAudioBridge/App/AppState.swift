@@ -222,7 +222,10 @@ final class AppState: ObservableObject {
         guard generation == currentStartGeneration() else { return }
         let (input, output) = resolveCurrentSelection()
         guard let inputUID = input?.uid, let outputUID = output?.uid else {
-            failStart(.engineFailed(message: "no system default"))
+            // 解決失敗の理由を入力 / 出力の choice から特定する:
+            // - .specific(uid) なら「選択デバイスが見つからない」(deviceDisconnected)
+            // - .systemDefault なら「システムデフォルト未取得」(engineFailed)
+            failStart(unresolvedReason(input: input, output: output))
             return
         }
         if FeedbackLoopDetector.isLoop(inputUID: inputUID, outputUID: outputUID) {
@@ -242,6 +245,16 @@ final class AppState: ObservableObject {
     nonisolated private func failStart(_ reason: StopReason) {
         engineRunningOnEngineQ = false
         setStatus(.stopped(reason))
+    }
+
+    nonisolated private func unresolvedReason(input: ResolvedDevice?, output: ResolvedDevice?) -> StopReason {
+        if input == nil, case .specific(let uid) = preferences.inputChoice {
+            return .deviceDisconnected(uid: uid)
+        }
+        if output == nil, case .specific(let uid) = preferences.outputChoice {
+            return .deviceDisconnected(uid: uid)
+        }
+        return .engineFailed(message: "no system default")
     }
 
     nonisolated private func rebuildSync() {
