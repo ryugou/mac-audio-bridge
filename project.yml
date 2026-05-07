@@ -40,5 +40,9 @@ targets:
     platform: macOS
     sources:
       - path: MacAudioBridgeTests
+    settings:
+      base:
+        GENERATE_INFOPLIST_FILE: YES
+        PRODUCT_BUNDLE_IDENTIFIER: com.ryugo.mac-audio-bridge.tests
     dependencies:
       - target: MacAudioBridge
